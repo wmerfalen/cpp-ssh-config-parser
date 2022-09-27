@@ -15,7 +15,17 @@ int main(int argc,char** argv) {
 		exit(1);
 	}
 	std::cout << "[info]: '" << GET_STATUS(2) << "' opened file successfully.\n";
-	p.report();
+	//p.report();
+	for(const auto& entry : p.get_entries()) {
+		std::cout << "entry: ";
+		for(const auto& host : entry.hosts) {
+			std::cout << host.get_name() << ", ";
+		}
+		std::cout << "\n";
+		for(const auto& pair : entry.data) {
+			std::cout << "[" << ssh::config::to_string(pair.first).value_or("-- UNKNOWN --") << "]: " << pair.second << "\n";
+		}
+	}
 	return 0;
 }
 

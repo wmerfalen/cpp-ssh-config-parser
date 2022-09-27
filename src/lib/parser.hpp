@@ -322,6 +322,9 @@ namespace ssh {
 			entry(std::string_view host_line) {
 				parse(host_line);
 			}
+			/**
+			 * TODO: lock this behind getters/setters
+			 */
 			std::vector<host> hosts;
 			std::map<keys,std::string> data;
 			void report() const {
@@ -355,12 +358,14 @@ namespace ssh {
 				parser(std::string_view config_file,const std::size_t& max_file_size) : parser() {
 					m_max_file_size = max_file_size;
 					good = false;
-					this->open(config_file);
+					open(config_file);
+					close();
 				}
 				parser(std::string_view config_file) : parser() {
 					m_max_file_size = MAX_FILE_SIZE;
 					good = false;
-					this->open(config_file);
+					open(config_file);
+					close();
 				}
 				parser() : m_max_file_size(MAX_FILE_SIZE),
 					issue("none"), issue_line(0), line_number(0), m_file_size(0),
@@ -368,6 +373,9 @@ namespace ssh {
 				{}
 				~parser() {
 					close();
+				}
+				const std::vector<entry>& get_entries() const {
+					return m_entries;
 				}
 				void report() const {
 					std::cout << "---------------------------------------------------\n";
