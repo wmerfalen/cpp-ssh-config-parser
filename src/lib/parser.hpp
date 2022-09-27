@@ -8,9 +8,14 @@
 
 namespace ssh {
 	namespace config {
+		/** 1024 * 1024 * 50 */
+		static constexpr std::size_t MAX_FILE_SIZE = 52428800;
 		// HOST_NAME_MAX is defined as 255 bytes
 		// see man 2 gethostname
 		static constexpr std::size_t MAX_HOSTNAME_LENGTH = 255;
+		static bool FILE_SIZE_TOO_BIG(const std::size_t& size) {
+			return size > MAX_FILE_SIZE;
+		}
 
 		namespace util {
 			static bool lower_case_compare(std::string_view a, std::string_view b) {
@@ -347,15 +352,22 @@ namespace ssh {
 			}
 		};
 		struct parser {
-				parser(std::string_view config_file) : m_offset(0), m_stop_parse(0) {
+				parser(std::string_view config_file,const std::size_t& max_file_size) : parser() {
+					m_max_file_size = max_file_size;
 					good = false;
 					this->open(config_file);
 				}
-				parser() = delete;
+				parser(std::string_view config_file) : parser() {
+					m_max_file_size = MAX_FILE_SIZE;
+					good = false;
+					this->open(config_file);
+				}
+				parser() : m_max_file_size(MAX_FILE_SIZE),
+					issue("none"), issue_line(0), line_number(0), m_file_size(0),
+					m_fstream(nullptr), m_offset(0),m_stop_parse(false),m_entries(), good(false)
+				{}
 				~parser() {
-					if(m_fstream) {
-						m_fstream->close();
-					}
+					close();
 				}
 				void report() const {
 					std::cout << "---------------------------------------------------\n";
@@ -411,23 +423,49 @@ namespace ssh {
 					}
 					return {true,0,"parsed"};
 				}
+				void close() {
+					if(m_fstream) {
+						m_fstream->close();
+						m_fstream = nullptr;
+					}
+				}
 			private:
+				std::size_t m_max_file_size;
 				std::string issue;
 				std::size_t issue_line;
 				std::size_t line_number;
-				std::size_t open(std::string_view config_file) {
+				std::size_t m_file_size;
+				std::vector<char> buf;
+				std::unique_ptr<std::fstream> m_fstream;
+				std::size_t m_offset;
+				bool m_stop_parse;
+				std::vector<entry> m_entries;
+				bool good;
+
+				/**
+				 * Returns a tuple of int32_t,std::size_t,std::string
+				 * - int32_t -> status. zero means successfully opened file. negative means error
+				 * - std::size_t -> number of bytes read from the file
+				 * - std::string -> if error, will have a message about what happened. if success, should contain "opened file successfully"
+				 */
+				std::tuple<int32_t,std::size_t,std::string> open(std::string_view config_file) {
 					m_fstream = std::make_unique<std::fstream>(config_file.data(),std::ifstream::in | std::ifstream::ate);
 					if(!m_fstream->good()) {
 						good = false;
-						return 0;
+						return {-1,0,"Couldn't open file"};
 					}
 					m_file_size = m_fstream->tellg();
+					if(m_file_size > m_max_file_size) {
+						m_fstream->close();
+						good = false;
+						return {-2,m_file_size,"File exceeds max file size"};
+					}
 					m_fstream->seekg(0);
 					buf.resize(m_file_size+1);
 					buf[m_file_size] = '\0';
 					m_fstream->read(&buf[0],m_file_size);
 					good = true;
-					return m_file_size;
+					return {0,buf.size(),"opened file successfully"};
 				}
 				void new_entry(std::string&& line) {
 					m_entries.emplace_back(line);
@@ -572,13 +610,6 @@ namespace ssh {
 							return false;
 					}
 				}
-				std::size_t m_file_size;
-				std::vector<char> buf;
-				std::unique_ptr<std::fstream> m_fstream;
-				std::size_t m_offset;
-				bool m_stop_parse;
-				std::vector<entry> m_entries;
-				bool good;
 		};
 	}; // end namespace config
 }; // end namespace ssh
