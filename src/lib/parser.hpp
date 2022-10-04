@@ -22,6 +22,7 @@
 //			 GSSAPIAuthentication yes
 
 
+#define __SSHCONFIGPARSER_LIB_PARSER_DEBUG__
 
 #if defined(__SSHCONFIGPARSER_LIB_PARSER_DEBUG__) || defined(__SSHCONFIGPARSER_ALL_DEBUG__)
 	#define m_debug(A) std::cerr << "[debug]{" << __FILE__ << ":" << __LINE__ << "}->" << A << "\n";
@@ -590,15 +591,22 @@ namespace ssh {
 					m_debug("new_include_entry: '" << line << "'");
 					m_entries.emplace_back(entry::type_t::INCLUDE,line);
 				}
+				const char& current_char() const {
+					static const char EOF_BYTE = '\0';
+					if(m_offset < buf.size()) {
+						return buf[m_offset];
+					}
+					return EOF_BYTE;
+				}
 				std::string capture_until_whitespace(std::size_t max) {
 					std::string current;
 					auto it = buf.cbegin() + m_offset;
 					while(!eof()) {
 						nextsym();
-						if(isspace(buf[m_offset])) {
+						if(isspace(current_char())) {
 							break;
 						}
-						current += buf[m_offset];
+						current += current_char();
 						if(current.length() >= max) {
 							return current;
 						}
@@ -608,20 +616,30 @@ namespace ssh {
 				void capture_indented_lines() {
 					while(!eof()) {
 						if(!expect(indent)) {
+							if(accept(comment)) {
+								consume_line();
+								nextsym();
+								continue;
+							}
 							rewind(1);
 							issue_line = line_number;
 							issue = "no indent. returning..\n";
+							m_debug("capture_indented_lines error: '" << issue << "' on line_number: '" << issue_line << "'");
 							return;
 						}
 						while(expect(indent)) {
 							nextsym();
 						}
 						if(accept(comment)) {
+							m_debug("comment accepted in indented line");
 							consume_line();
+							nextsym();
+							continue;
 						}
 						if(!expect(alnum)) {
 							issue_line = line_number;
 							issue = std::string("expected alpha numeric, but got: '") + substr(10) + "'";
+							m_debug("capture_indented_lines error: '" << issue << "' on line_number: '" << issue_line << "'");
 							return;
 						}
 						rewind(1);
@@ -630,6 +648,7 @@ namespace ssh {
 						if(!opt_key.has_value()) {
 							issue_line = line_number;
 							issue = std::string("expected a valid key, instead got: '") + key + std::string("'");
+							m_debug("capture_indented_lines error: '" << issue << "' on line_number: '" << issue_line << "'");
 							eof_reached();
 							return;
 						}
@@ -679,8 +698,8 @@ namespace ssh {
 				std::string capture_until_eol(std::size_t max_len) {
 					std::string s;
 					std::size_t ctr = 0;
-					while(nextsym() && !eof() && buf[m_offset] != '\n') {
-						s += buf[m_offset];
+					while(nextsym() && !eof() && current_char() != '\n') {
+						s += current_char();
 						++ctr;
 						if(ctr == max_len) {
 							break;
@@ -694,8 +713,9 @@ namespace ssh {
 					std::string_view str = substr(len);
 					if(ssh::config::util::lower_case_compare(look_for,str)) {
 						str = substr(len + 1);
+						const char& f = str.back();
 						m_debug(" it is a '" << look_for << "' and: '" << str.substr(len) << "'");
-						return expect_comparison(str.substr(len),expect_after_match);
+						return expect_comparison(f,expect_after_match);
 					}
 					return false;
 				}
@@ -711,7 +731,7 @@ namespace ssh {
 				void consume_line() {
 					do {
 						nextsym();
-					} while(!eof() && buf[m_offset] != '\n');
+					} while(!eof() && current_char() != '\n');
 				}
 				bool accept(Symbol s) {
 					if(eof()) {
@@ -719,23 +739,24 @@ namespace ssh {
 					}
 					switch(s) {
 						case letter:
-							return isalpha(buf[m_offset]);
+							return isalpha(current_char());
 						case whitespace:
-							return isspace(buf[m_offset]);
+							return isspace(current_char());
 						case comment:
-							return buf[m_offset] == '#';
+							return current_char() == '#';
 						default:
 							return false;
 					}
 				}
-				bool expect_comparison(std::string_view target,const Symbol& s) {
+				bool expect_comparison(const char& target,const Symbol& s) {
 					switch(s) {
 						case whitespace:
-							return isspace(target[0]);
+							return isspace(target);
 						case indent:
-							return target[0] == '\t';
+							m_debug("target: '" << target << "'");
+							return target == '\t';
 						case alnum:
-							return isalnum(target[0]);
+							return isalnum(target);
 						default:
 							return false;
 					}
@@ -744,7 +765,7 @@ namespace ssh {
 					if(eof()) {
 						return false;
 					}
-					return expect_comparison(&buf[m_offset],s);
+					return expect_comparison(current_char(),s);
 				}
 		};
 	}; // end namespace config
