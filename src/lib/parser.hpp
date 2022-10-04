@@ -431,6 +431,9 @@ namespace ssh {
 				std::string_view get_parser_error() const {
 					return parser_error;
 				}
+				bool name_is(std::string_view host) const {
+					return ssh::config::util::lower_case_compare(name,host);
+				}
 			private:
 				std::string name;
 				bool wildcard;

@@ -115,6 +115,53 @@ namespace ssh_config_parser_tests {
 		}
 		TEST_PASS();
 	}
+	bool test_rules_are_stored_in_order() {
+		TEST_ENTRY();
+		std::string buffer =
+		    "Host !router\n"
+		    "\tBindAddress 192.168.34.49\n"
+		    "\n"
+		    "Host github.com\n"
+		    "\tPasswordAuthentication yes\n"
+		    ;
+		parser p(vectorize(buffer));
+		std::tuple<bool,std::size_t,std::string,int16_t> parsed = p.start_parse();
+		if(!std::get<0>(parsed)) {
+			TEST_FAIL(vectorize_str({
+				"Expected to get a successful parse but got false",
+				to_string(parsed),
+			}));
+		}
+		std::vector<entry> entries = p.get_entries();
+		if(entries.size() == 0) {
+			TEST_FAIL(vectorize_str({
+				"Parsed entries is zero"
+			}));
+		}
+		if(entries.size() != 2) {
+			TEST_FAIL(vectorize_str({
+				"Expecting entries.size() to be 2. Instead it is:",
+				std::to_string(entries.size()),
+			}));
+		}
+		entry& router = entries[0];
+		entry& github = entries[1];
+		if(!router.hosts[0].name_is("router")) {
+			TEST_FAIL(vectorize_str({
+				"Expected 'router' as first host in first entry. Instead, we got:",
+				std::string(router.hosts[0].get_name()),
+			})
+			);
+		}
+		if(!github.hosts[0].name_is("github.com")) {
+			TEST_FAIL(vectorize_str({
+				"Expected 'github.com' as first host in first entry. Instead, we got:",
+				std::string(github.hosts[0].get_name()),
+			})
+			);
+		}
+		TEST_PASS();
+	}
 	bool test_negated_rules_apply_to_rules() {
 		TEST_ENTRY();
 		std::string buffer =
@@ -139,7 +186,7 @@ namespace ssh_config_parser_tests {
 			}));
 		}
 		entry& router = entries[0];
-		if(router.hosts[0].get_name().compare("router") == 0) {
+		if(!router.hosts[0].name_is("router")) {
 			TEST_FAIL(vectorize_str({
 				"Expected 'router' as first host in first entry. Instead, we got:",
 				std::string(router.hosts[0].get_name()),
@@ -158,6 +205,7 @@ namespace ssh_config_parser_tests {
 		test_comments_before_host_safely_ignored();
 		test_comments_in_indented_lines_are_ignored();
 		test_negated_rules_apply_to_rules();
+		test_rules_are_stored_in_order();
 	}
 };
 
