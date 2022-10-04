@@ -22,7 +22,7 @@
 //			 GSSAPIAuthentication yes
 
 
-#define __SSHCONFIGPARSER_LIB_PARSER_DEBUG__
+//#define __SSHCONFIGPARSER_LIB_PARSER_DEBUG__
 
 #if defined(__SSHCONFIGPARSER_LIB_PARSER_DEBUG__) || defined(__SSHCONFIGPARSER_ALL_DEBUG__)
 	#define m_debug(A) std::cerr << "[debug]{" << __FILE__ << ":" << __LINE__ << "}->" << A << "\n";
@@ -56,7 +56,77 @@ namespace ssh {
 		}
 
 		namespace util {
-			static bool lower_case_compare(std::string_view a, std::string_view b) {
+			bool lower_case_compare(std::string_view a, std::string_view b);
+			std::vector<std::string> tokenize_hostname(std::string_view hostname);
+			/**
+			 * Handle various types of wildcards
+			 */
+			std::vector<std::string> tokenize_hostname(std::string_view hostname) {
+				std::vector<std::string> portions;
+				std::string current;
+				for(const auto& ch : hostname) {
+					if(ch == '*') {
+						if(current.length()) {
+							current += '*';
+							portions.emplace_back(current);
+							current.clear();
+							continue;
+						}
+					}
+					if(ch == '.') {
+						if(current.length()) {
+							portions.emplace_back(current);
+							current.clear();
+							continue;
+						}
+					}
+					current += ch;
+				}
+				if(current.length()) {
+					portions.emplace_back(current);
+				}
+				return portions;
+			}
+
+			struct expression_t {
+				expression_t() = delete;
+				expression_t(std::string_view e) : value(e) {}
+				~expression_t() = default;
+				expression_t(const expression_t& other) : value(other.value) {}
+				/**
+				 * Checks if the expression (usually a Host or Match entry) applies
+				 * to the hostname in question
+				 */
+				bool is_wildcard_match(std::string_view hostname) const {
+					auto xp_tokens = tokenize_hostname(value);
+					auto h_tokens = tokenize_hostname(hostname);
+					if(xp_tokens.size() == 1 && lower_case_compare(xp_tokens[0],"*")) {
+						return true;
+					}
+					std::size_t pass_count = 0;
+					for(std::size_t i=0; i < xp_tokens.size(); i++) {
+						if(i >= h_tokens.size()) {
+							return false;
+						}
+						if(lower_case_compare(xp_tokens[i],"*") && lower_case_compare(h_tokens[i],"*") == false) {
+							++pass_count;
+							continue;
+						}
+						if(lower_case_compare(xp_tokens[i],h_tokens[i])) {
+							++pass_count;
+							continue;
+						}
+					}
+					return pass_count > 1;
+				}
+				std::string value;
+			};
+
+			bool is_wildcard_match(std::string_view expression,std::string_view hostname) {
+				expression_t exp(expression);
+				return exp.is_wildcard_match(hostname);
+			}
+			bool lower_case_compare(std::string_view a, std::string_view b) {
 				for(unsigned i=0; i < a.length() && i < a.length() && i < b.length(); i++) {
 					if(tolower(a[i]) != tolower(b[i])) {
 						return false;
@@ -441,6 +511,17 @@ namespace ssh {
 			}
 		};
 		struct parser {
+				enum sshconf_error : int16_t {
+					PARSED_OKAY = 0,
+					FILE_NOT_OPENED = -1,
+					PARSE_ISSUE = -2,
+				};
+				parser(const std::vector<char>& buffer) : parser() {
+					m_file_size = buffer.size();
+					buf.assign(buffer.cbegin(),buffer.cend());
+					line_number = 0;
+					good = true;
+				}
 				parser(std::string_view config_file,const std::size_t& max_file_size) : parser() {
 					m_max_file_size = max_file_size;
 					good = false;
@@ -487,12 +568,12 @@ namespace ssh {
 				static constexpr std::size_t HOST_STRING_LENGTH = HOST_STRING.length();
 				static constexpr std::string_view MATCH_STRING = "Match";
 				static constexpr std::size_t MATCH_STRING_LENGTH = MATCH_STRING.length();
-				std::tuple<bool,std::size_t,std::string> start_parse() {
+				std::tuple<bool,std::size_t,std::string,int16_t> start_parse() {
 					line_number = 0;
 					issue.clear();
 					issue_line = 0;
 					if(!good) {
-						return {false,0,"not parsing. wasn't able to open file successfully"};
+						return {false,0,"not parsing. wasn't able to open file successfully",sshconf_error::FILE_NOT_OPENED};
 					}
 					m_offset = 0;
 					m_stop_parse = false;
@@ -533,9 +614,9 @@ namespace ssh {
 						}
 					}
 					if(issue_line) {
-						return {false,issue_line,issue};
+						return {false,issue_line,issue,sshconf_error::PARSE_ISSUE};
 					}
-					return {true,0,"parsed"};
+					return {true,0,"parsed",sshconf_error::PARSED_OKAY};
 				}
 				void close() {
 					if(m_fstream) {
@@ -753,7 +834,6 @@ namespace ssh {
 						case whitespace:
 							return isspace(target);
 						case indent:
-							m_debug("target: '" << target << "'");
 							return target == '\t';
 						case alnum:
 							return isalnum(target);
