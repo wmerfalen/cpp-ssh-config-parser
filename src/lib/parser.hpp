@@ -6,13 +6,50 @@
 #include <memory>
 #include <map>
 
+#include <linux/limits.h> /** For PATH_MAX */
+
+//  TODO: Arguments may optionally be enclosed in double quotes (") in order
+//       to represent arguments containing spaces
+//  TODO: Configuration options may be separated by whitespace or
+//      optional whitespace and exactly one ‘=’; the latter format is useful to avoid the need to quote
+//	    whitespace when specifying configuration options using the ssh, scp, and sftp -o option.
+//
+//	TODO: Debian's openssh-client package sets several options as standard in
+//			 /etc/ssh/ssh_config which are not the default in ssh(1):
+//			 Include /etc/ssh/ssh_config.d/*.conf
+//			 SendEnv LANG LC_*
+//			 HashKnownHosts yes
+//			 GSSAPIAuthentication yes
+
+
+
+#if defined(__SSHCONFIGPARSER_LIB_PARSER_DEBUG__) || defined(__SSHCONFIGPARSER_ALL_DEBUG__)
+	#define m_debug(A) std::cerr << "[debug]{" << __FILE__ << ":" << __LINE__ << "}->" << A << "\n";
+#else
+	#define m_debug(A)
+#endif
+
+#if defined(__SSHCONFIGPARSER_LIB_PARSER_MORE_DEBUG__) || defined(__SSHCONFIGPARSER_ALL_DEBUG__)
+	#define m_more_debug(A) std::cerr << "[more-debug]{" << __FILE__ << ":" << __LINE__ << "}->" << A << "\n";
+#else
+	#define m_more_debug(A)
+#endif
+
+#if defined(__SSHCONFIGPARSER_LIB_PARSER_EXTRA_DEBUG__) || defined(__SSHCONFIGPARSER_ALL_DEBUG__)
+	#define m_extra_debug(A) std::cerr << "[extra-debug]{" << __FILE__ << ":" << __LINE__ << "}->" << A << "\n";
+#else
+	#define m_extra_debug(A)
+#endif
+
 namespace ssh {
 	namespace config {
-		/** 1024 * 1024 * 50 */
-		static constexpr std::size_t MAX_FILE_SIZE = 52428800;
+		/** MAX_FILE_SIZE is 50 mib: 1024 * 1024 * 50 */
+		static constexpr std::size_t MAX_FILE_SIZE = 1024 * 1024 * 50;
 		// HOST_NAME_MAX is defined as 255 bytes
 		// see man 2 gethostname
 		static constexpr std::size_t MAX_HOSTNAME_LENGTH = 255;
+		static constexpr std::size_t MAX_INCLUDE_LENGTH = PATH_MAX;
+
 		static bool FILE_SIZE_TOO_BIG(const std::size_t& size) {
 			return size > MAX_FILE_SIZE;
 		}
@@ -98,6 +135,14 @@ namespace ssh {
 			VerifyHostKeyDNS,
 			VisualHostKey,
 			XAuthLocation,
+			//
+			//	Debian's openssh-client package sets several options as standard in
+			//	 /etc/ssh/ssh_config which are not the default in ssh(1):
+			//	 Include /etc/ssh/ssh_config.d/*.conf
+			//	 SendEnv LANG LC_*
+			//	 HashKnownHosts yes
+			//	 GSSAPIAuthentication yes
+			Include,
 		};
 		static std::optional<keys> from_string(std::string_view k) {
 #define STR_TO_ENUM(A) if(util::lower_case_compare(k,#A)){ return keys::A; }
@@ -170,6 +215,8 @@ namespace ssh {
 			STR_TO_ENUM(VerifyHostKeyDNS);
 			STR_TO_ENUM(VisualHostKey);
 			STR_TO_ENUM(XAuthLocation);
+			/** Debian openssh-client constants */
+			STR_TO_ENUM(Include);
 			return std::nullopt;
 #undef STR_TO_ENUM
 		}
@@ -245,7 +292,10 @@ namespace ssh {
 					KEY_ENUM_TO_STR(VerifyHostKeyDNS);
 					KEY_ENUM_TO_STR(VisualHostKey);
 					KEY_ENUM_TO_STR(XAuthLocation);
+					/** Debian openssh-client constants */
+					KEY_ENUM_TO_STR(Include);
 				default:
+					m_debug("Unknown keyword found");
 					return std::nullopt;
 			}
 #undef KEY_ENUM_TO_STR
@@ -318,15 +368,31 @@ namespace ssh {
 				std::string parser_error;
 		};
 		struct entry {
+			enum type_t : uint8_t {
+				HOST = 0,
+				MATCH,
+				INCLUDE,
+			};
 			entry() = delete;
-			entry(std::string_view host_line) {
-				parse(host_line);
+			entry(type_t type,std::string_view line) {
+				switch(type) {
+					case type_t::HOST:
+					case type_t::MATCH:
+					default:
+						parse_host(line);
+						break;
+					case type_t::INCLUDE:
+						parse_includes(line);
+						break;
+				}
 			}
 			/**
 			 * TODO: lock this behind getters/setters
 			 */
+			type_t type;
 			std::vector<host> hosts;
 			std::map<keys,std::string> data;
+			std::vector<std::string> include_files;
 			void report() const {
 				for(const auto& host : hosts) {
 					host.report();
@@ -335,7 +401,7 @@ namespace ssh {
 					std::cout << to_string(pair.first).value_or("invalid-key") << ": " << pair.second << "\n";
 				}
 			}
-			void parse(std::string_view line) {
+			void parse_host(std::string_view line) {
 				std::string current;
 				for(const auto& ch : line) {
 					if(isspace(ch) && current.length()) {
@@ -351,6 +417,25 @@ namespace ssh {
 				}
 				if(current.length()) {
 					hosts.emplace_back(current);
+					m_debug("Host: '" << current << "'");
+				}
+			}
+			void parse_includes(std::string_view line) {
+				std::string current;
+				for(const auto& ch : line) {
+					if(isspace(ch) && current.length()) {
+						if(current.length() > MAX_INCLUDE_LENGTH - 1) {
+							include_files.emplace_back(current.substr(0,MAX_INCLUDE_LENGTH - 1));
+						} else {
+							include_files.emplace_back(current);
+						}
+						current.clear();
+						continue;
+					}
+					current += ch;
+				}
+				if(current.length()) {
+					include_files.emplace_back(current);
 				}
 			}
 		};
@@ -395,6 +480,12 @@ namespace ssh {
 					colon,
 					comment,
 				};
+				static constexpr std::string_view INCLUDE_STRING = "Include";
+				static constexpr std::size_t INCLUDE_STRING_LENGTH = INCLUDE_STRING.length();
+				static constexpr std::string_view HOST_STRING = "Host";
+				static constexpr std::size_t HOST_STRING_LENGTH = HOST_STRING.length();
+				static constexpr std::string_view MATCH_STRING = "Match";
+				static constexpr std::size_t MATCH_STRING_LENGTH = MATCH_STRING.length();
 				std::tuple<bool,std::size_t,std::string> start_parse() {
 					line_number = 0;
 					issue.clear();
@@ -405,6 +496,7 @@ namespace ssh {
 					m_offset = 0;
 					m_stop_parse = false;
 					uint8_t add = 0;
+					bool is_host = 0, is_match = 0;
 					while(!eof()) {
 						while(accept(whitespace)) {
 							nextsym();
@@ -412,17 +504,30 @@ namespace ssh {
 						while(accept(comment)) {
 							consume_line();
 						}
+						if(is_include_config()) {
+							advance(INCLUDE_STRING_LENGTH);
+							new_include_entry(capture_until_eol(MAX_INCLUDE_LENGTH));
+							continue;
+						}
+						is_host = is_match = 0;
 						add = 0;
 						if(host()) {
 							add = 4;
+							is_host = true;
 						}
 						if(match()) {
 							add = 5;
+							is_match = true;
 						}
 						if(add) {
 							advance(add);
 							/** We found a Host/Match entry. capture the hosts */
-							new_entry(capture_until_eol(1024));
+							if(is_host) {
+								new_host_entry(capture_until_eol(1024));
+							}
+							if(is_match) {
+								new_match_entry(capture_until_eol(1024));
+							}
 							capture_indented_lines();
 						}
 					}
@@ -475,8 +580,15 @@ namespace ssh {
 					good = true;
 					return {0,buf.size(),"opened file successfully"};
 				}
-				void new_entry(std::string&& line) {
-					m_entries.emplace_back(line);
+				void new_host_entry(std::string&& line) {
+					m_entries.emplace_back(entry::type_t::HOST,line);
+				}
+				void new_match_entry(std::string&& line) {
+					m_entries.emplace_back(entry::type_t::MATCH,line);
+				}
+				void new_include_entry(std::string&& line) {
+					m_debug("new_include_entry: '" << line << "'");
+					m_entries.emplace_back(entry::type_t::INCLUDE,line);
 				}
 				std::string capture_until_whitespace(std::size_t max) {
 					std::string current;
@@ -577,11 +689,24 @@ namespace ssh {
 					advance(1);
 					return s;
 				}
+				bool is_lower_match_then_expect(std::string_view look_for,const std::size_t& len, Symbol expect_after_match) {
+					m_extra_debug("is_lower_match_then_expect look_for: '" << look_for << "'");
+					std::string_view str = substr(len);
+					if(ssh::config::util::lower_case_compare(look_for,str)) {
+						str = substr(len + 1);
+						m_debug(" it is a '" << look_for << "' and: '" << str.substr(len) << "'");
+						return expect_comparison(str.substr(len),expect_after_match);
+					}
+					return false;
+				}
+				bool is_include_config() {
+					return is_lower_match_then_expect(INCLUDE_STRING,INCLUDE_STRING_LENGTH,whitespace);
+				}
 				bool host() {
-					return substr(5).compare("Host ") == 0;
+					return is_lower_match_then_expect(HOST_STRING,HOST_STRING_LENGTH,whitespace);
 				}
 				bool match() {
-					return substr(6).compare("Match ") == 0;
+					return is_lower_match_then_expect(MATCH_STRING,MATCH_STRING_LENGTH,whitespace);
 				}
 				void consume_line() {
 					do {
@@ -603,20 +728,23 @@ namespace ssh {
 							return false;
 					}
 				}
+				bool expect_comparison(std::string_view target,const Symbol& s) {
+					switch(s) {
+						case whitespace:
+							return isspace(target[0]);
+						case indent:
+							return target[0] == '\t';
+						case alnum:
+							return isalnum(target[0]);
+						default:
+							return false;
+					}
+				}
 				bool expect(Symbol s) {
 					if(eof()) {
 						return false;
 					}
-					switch(s) {
-						case whitespace:
-							return isspace(buf[m_offset]);
-						case indent:
-							return buf[m_offset] == '\t';
-						case alnum:
-							return isalnum(buf[m_offset]);
-						default:
-							return false;
-					}
+					return expect_comparison(&buf[m_offset],s);
 				}
 		};
 	}; // end namespace config
